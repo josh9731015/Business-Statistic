@@ -1,0 +1,310 @@
+---
+title: 'Business Statistics End of Term Assessment IB94X0 2023-2024 #1'
+author: "5582162"
+output:
+  html_document:
+    toc: yes
+    toc_depth: 3
+editor_options: 
+  chunk_output_type: console
+---
+
+```{r setup, message=FALSE, warning=FALSE}
+library(tidyverse)
+library(emmeans)
+library(lubridate)
+library(car)
+library(Hmisc)
+library(gridExtra)
+options(width=100)
+```
+
+---
+
+This is to certify that the work I am submitting is my own. All external references and sources are clearly acknowledged and identified within the contents. I am aware of the University of Warwick regulation concerning plagiarism and collusion.
+
+No substantial part(s) of the work submitted here has also been submitted by me in other assessments for accredited courses of study, and I acknowledge that if this has been done an appropriate reduction in the mark I might otherwise have received will be made
+
+---
+
+# Question 1
+
+## Read Data
+```{r}
+bike = read_csv("London_COVID_bikes.csv")
+restriction = read_csv("restrictions_daily.csv")
+
+# Check the data type and missing values
+str(bike)
+summary(bike)
+# The restriction is from 2020.03.01
+str(restriction)
+summary(restriction)
+```
+There are no missing values and no odd records in these datasets.
+
+## Date revision
+```{r}
+# Transform the attribute of date
+restriction$date = as.Date(restriction$date)
+
+# Since we are more concerned with the influence of government measures after the COVID, so we match the dates between the original and COVID restriction dataset
+bike_new = bike %>% filter(date >= min(restriction$date))
+```
+
+## Data processing
+```{r}
+# Transform binary variables and year into factor
+bike_new = bike_new %>%
+  mutate_at(vars(schools_closed, pubs_closed, shops_closed, eating_places_closed, stay_at_home, household_mixing_indoors_banned, wfh, rule_of_6_indoors, curfew, eat_out_to_help_out, year), as.factor)
+
+# Transform month and day into factor and arrange them
+bike_new = bike_new %>% mutate(month=factor(month, levels=c("Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec")))
+
+bike_new = bike_new %>% mutate(day=factor(day, levels=c("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")))
+```
+
+## Data Cleaning
+```{r}
+# Check outliers
+# It seems that there are few outliers
+ggplot(bike_new) + geom_histogram(aes(Hires), bins = 100)
+
+# Use the Interquartile Rule to find outliers
+median_value = quantile(bike_new$Hires, probs = 0.50)
+q1 = quantile(bike_new$Hires, probs = 0.25)
+q3 = quantile(bike_new$Hires, probs = 0.75)
+iqr = q3 - q1
+(lower_threshold = q1 - 1.5 * iqr)
+# From upper_threshold, outliers would be the number greater than 58714
+(upper_threshold = q3 + 1.5 * iqr)
+outliers = bike_new[bike_new$Hires < lower_threshold | bike_new$Hires > upper_threshold, ]
+summary(outliers)
+```
+We observe that these outliers share the same features that the "work from home" variable is included. Since the effect of this variable is one of our main focuses, we choose not to remove them, except for the two outliers where the number of bike rentals is equal to 0.
+
+```{r}
+# Remove the outliers which the value is equal to 0
+bike_new = bike_new %>% filter(Hires > 0)
+```   
+
+## Regressions on the number of bike rentals
+
+### The effect among Work From Home, Rule of 6 Indoors and Eat Out to Help Out scheme without interaction
+```{r}
+m.hires.by.mixed = lm(Hires~wfh + rule_of_6_indoors + eat_out_to_help_out, data=bike_new)
+summary(m.hires.by.mixed)
+cbind(coef(m.hires.by.mixed), confint(m.hires.by.mixed))
+```
+The result shows that there is a significant negative effect of work from home on the number of bike rentals (b = -7026.1, CI[-8568.86, -5483.28], t(1304) = -8.93, p < 0.001), and a a significant positive effect of rule of 6 indoors (b = 7744.4, CI [5671.00, 9817.83], t(1304) = 7.33, p < 0.001). However, there is no significant effect of the eat out to help out scheme (b = 1991.0, CI = [-1962.67, 5944.69], t(1304) = 0.99, p = 0.32).
+
+```{r}
+# The vif scores are all low, so there is no multicollinearity problem
+vif(m.hires.by.mixed)
+```
+
+### The effect among the above three elements with interaction
+```{r}
+m.hires.by.mixed.intr = lm(Hires~wfh * rule_of_6_indoors * eat_out_to_help_out, data=bike_new)
+summary(m.hires.by.mixed.intr)
+cbind(coef(m.hires.by.mixed.intr), confint(m.hires.by.mixed.intr))
+```
+The result shows that there is a significant negative effect of work from home on the number of bike rentals (b = -7001.7, CI[-8581.73, -5421.70], t(1303) = -8.69, p < 0.001) and a significant positive effect of rule of 6 indoors (b = 8229.7, CI[1176.54, 15282.93], t(1303) = 2.29, p = 0.02). However there is no significant effect of eat out to help out scheme (b = 2011.7, CI[-1953.90, 5977.22], t(1303) = 1.00, p = 0.32) and the interaction term between work from home and rule of 6 indoors (b = -531.3, CI[-7910.78, 6848.25], t(1303) = -0.14, p = 0.89). In addition, there are missing values for other interaction terms, meaning that there may be a  multicollinearity problem.
+
+```{r}
+# The result when running vif(m.hires.by.mixed.intr) shows that the vif scores cannot be calculated due to aliased coefficients, meaning that there is a multicollinearity problem
+
+# Also check if these elements have high correlations
+# No high pairwise correlations between these elements
+rcorr(as.matrix(select(bike_new, Hires, wfh, rule_of_6_indoors, eat_out_to_help_out)))
+
+anova(m.hires.by.mixed, m.hires.by.mixed.intr)
+```
+The anova result shows that the model with interaction has no significant improvement (F(1304, 1303) = 0.020, p = 0.89), so we wouldn't adopt this model (with interaction).
+
+### The effect among Work From Home, Rule of 6 Indoors, Eat Out to Help Out scheme and date(year, month, day) without interaction
+
+Given the need to interpret model results, we are particularly interested in the comprehensive impact of COVID-related measures and time on bicycle rentals (not only consider the impact of time on bicycle rentals).
+```{r}
+m.hires.by.mixed.date = lm(Hires~wfh + rule_of_6_indoors + eat_out_to_help_out + day + month + year, data=bike_new)
+summary(m.hires.by.mixed.date)
+cbind(coef(m.hires.by.mixed.date), confint(m.hires.by.mixed.date))
+```
+The result shows that almost every elements has a significant positive effect on the number of bike rentals, while there is a negative effect of work from home, December and year 2023. Furthermore, there is no significant effect of the eat out to help out scheme, Sunday and year 2021.
+
+```{r}
+# The vif scores are all low, so there is no multicollinearity problem
+vif(m.hires.by.mixed.date)
+```
+If we consider the interaction effect, the result would be very complex, so we wouldn't consider to include that in this case.
+
+# Conclusion
+This section presents the results of the analyses that examine the effect on the number of bike rentals. There are 4812 records in the original dataset from 30th July 2010 to 30th September 2023, but we choose to focus on the impact of policies on the number of bike rentals after the COVID. After data processing, 1310 records are left for analysis between 1st March 2020 and 30th September 2023. The dataset contains a small amount of outliers, which might affect the accuracy of the data. However, we choose to keep the certain outliers that the key variable we would like to observe is included except for those where the number of bike rentals is equal to 0. After removing them, 1308 records are left. Furthermore, since a huge decrease of the sample size from 4812 to 1308, the statistical power may drop.
+
+```{r}
+summary(bike_new$wfh)
+summary(bike_new$rule_of_6_indoors)
+summary(bike_new$eat_out_to_help_out)
+```
+
+In addition, it is noticeable that we can see from the above that the sample sizes of rule of 6 indoors and the eat out to help out scheme are both lower than 100, meaning that the statistical power would be weak and may influence the accuracy of the regression. Therefore, we should be more careful when analyzing these two variables.
+
+The regression result shows that there is a significant negative effect of work from home that has an decrease of 7026.1 on the number of bike rentals (95% CI[-8568.86, -5483.28], t(1304) = -8.93, p < 0.001). Conversely, rule of 6 indoors exhibits a significant positive effect on bike rentals, with an increase of 7744.4 (95% CI [5671.00, 9817.83], t(1304) = 7.33, p < 0.001). On the other hand, although the eat out to help out scheme brings the positive change of 1991.0 in the number of bike rentals, the effect is not significant (95% CI = [-1962.67, 5944.69], t(1304) = 0.99, p = 0.32). To sum it up, the effect of work from home is negative on the number of bike rentals while rule of 6 indoors brings positive effect on that, and basically there is no change depending on the eat out to help out scheme.
+
+When we also include the effect of years, months and days of the week, the regression result shows that almost every element has a significant positive effect on the number of bike rentals whereas a significant negative effect of work from home, December and year 2023. Moreover, no significant effect is found only on the eat out to help out scheme, Sunday and year 2021, which account for small proportion of all variables included. Therefore, it is appropriate to control the effect of potential differences between different years, months, and days of the week.
+
+---
+
+# Question 2
+
+## Read Data and data processing
+```{r}
+sales = read_csv("publisher_sales.csv")
+str(sales)
+summary(sales)
+```
+There are no missing values in this dataset, but there is a record that the number of sales is negative, so we choose to remove that.
+
+```{r}
+# Remove the odd record
+sales = sales %>% filter(daily.sales >= 0)
+```
+
+```{r}
+# We wouldn't transform "sale source" and "publisher type" into factor because we don't need these columns to do the analysis in this case
+sales$genre = as.factor(sales$genre)
+```
+
+```{r}
+# Check outliers
+grid.arrange(
+ggplot(sales) + geom_histogram(aes(daily.sales), bins = 100),
+ggplot(sales) + geom_histogram(aes(total.reviews), bins = 100),
+ggplot(sales) + geom_histogram(aes(sale.price), bins = 100)
+)
+```
+
+No obvious or unreasonable outliers (0 total reviews of a book is reasonable in this case) for daily sales, total reviews and sale price are needed to be removed.
+
+## Regressions on the number of sales
+
+### The effect among average review scores and total number of reviews without interaction
+```{r}
+m.sales.by.avg.total = lm(daily.sales~avg.review + total.reviews, data=sales)
+summary(m.sales.by.avg.total)
+cbind(coef(m.sales.by.avg.total), confint(m.sales.by.avg.total))
+```
+The result shows that there is a significant negative effect of average review scores on daily sales (b = -4.30, CI[-5.31, -3.29], t(5996) = -8.36, p < 0.001), whereas there is a significant positive effect of total reviews on daily sales (b= 0.53, CI[0.52, 0.55], t(5996) = 68.96, p < 0.001).
+
+```{r}
+# Plot graphs to see the effect of average review scores and total number of reviews on the number of sales
+grid.arrange(
+ggplot(sales, aes(y=daily.sales, x=avg.review)) + geom_point() + geom_smooth(method = lm) + labs(x="Average Review Score", y="Number of Daily Sales"),
+ggplot(sales, aes(y=daily.sales, x=total.reviews)) + geom_point() + geom_smooth(method = lm) + labs(x="Total Reviews", y="Number of Daily Sales") 
+)
+```
+
+We can see that there is a very weak negative correlation between daily sales and average review scores and a positive correlation between daily sales and total reviews.
+
+```{r}
+# Separate the average view scores and total views into 4 different bins by quartiles to see if there are different effects on each other for different quartiles
+avg.review.bins <- quantile(pull(sales, avg.review))
+sales <- sales %>% mutate(avg.review.bin=cut(avg.review, avg.review.bins, include.lowest=TRUE))
+
+total.reviews.bins <- quantile(pull(sales, total.reviews))
+sales <- sales %>% mutate(total.reviews.bin=cut(total.reviews, total.reviews.bins, include.lowest=TRUE))
+
+grid.arrange(
+    ggplot(sales, aes(x=avg.review, y=daily.sales, col=total.reviews.bin)) + geom_point(alpha=0.5) + geom_smooth(method=lm) + geom_smooth(mapping=aes(col=NULL), method=lm, col="black") + labs(x="Average Review Score", y="Number of Daily Sales", col="Total Reviews"),
+    ggplot(sales, aes(x=total.reviews, y=daily.sales, col=avg.review.bin)) + geom_point(alpha=0.5) + geom_smooth(method=lm) + geom_smooth(mapping=aes(col=NULL), method=lm, col="black") + labs(x="Total Reviews", y="Number of Daily Sales", col="Average Review Score")
+)
+```
+
+We can see that lines are a little separated and the dot colors for the higher total reviews quartiles are higher up, indicating more daily sales for higher total reviews quartiles. On the other hand, there are almost no differences for different lines for average review scores in the relationship of total reviews and daily sales.
+
+```{r}
+# The vif scores are all low without interaction terms 
+vif(m.sales.by.avg.total)
+```
+
+### The effect among average review scores and total number of reviews with interaction
+```{r}
+m.sales.by.avg.total.intr = lm(daily.sales~avg.review * total.reviews, data=sales)
+summary(m.sales.by.avg.total.intr)
+cbind(coef(m.sales.by.avg.total.intr), confint(m.sales.by.avg.total.intr))
+```
+The result shows that there is a significant negative effect of average review scores on daily sales (b = -14.68, CI[-16.62, -12.74], t(5995) = -14.83, p < 0.001), and a significant positive effect of total reviews on daily sales (b = 0.14, CI[0.07, 0.20], t(5995) = 4.21, p < 0.001). There is also a significant positive interaction between average review scores and total reviews (b = 0.10, CI[0.08, 0.11], t(5995) = 12.22, p < 0.001).
+
+```{r}
+# There is a relatively high significant correlation of 0.66 between daily.sales and total.reviews
+rcorr(as.matrix(select(sales, daily.sales, avg.review, total.reviews)))
+
+# The high vif scores on total reviews and the interaction term suggest that there is a multicollinearity problem, so we shouldn't consider the interaction effect
+vif(m.sales.by.avg.total.intr)
+
+anova(m.sales.by.avg.total,m.sales.by.avg.total.intr)
+```
+Although the anova analysis shows that the model with interaction have a significant improvement (F(5996, 5995) = 149.21, p < 0.001), we wouldn't adopt this model due to its high vif scores.
+
+### The effect of sale price
+```{r}
+m.sales.by.price = lm(daily.sales~sale.price, data=sales)
+summary(m.sales.by.price)
+cbind(coef(m.sales.by.price), confint(m.sales.by.price))
+```
+The result shows that there is a significant negative effect of sale price on the number of sales (b = -3.98, CI[-4.15, -3.81], t(5997) = -45.77, p < 0.001).
+
+### The effect of sale price and different genres without interaction
+```{r}
+m.sales.by.price.genres = lm(daily.sales~sale.price + genre, data=sales)
+summary(m.sales.by.price.genres)
+cbind(coef(m.sales.by.price.genres), confint(m.sales.by.price.genres))
+```
+The result shows that there is a significant negative effect of sale price (b = -1.43, CI[-1.71, -1.15], t(5995) = -10.03, p < 0.001) on the number of sales when holding the genre constant. Furthermore, compared to adult fiction, there is a negative effect of non fiction (b = -9.01, CI[-11.40, -6.62], t(5995) = -7.39, p < 0.001), while there is a positive effect of YA fiction (b = 30.54, CI = [29.17, 31.90], t(5995) = 43.76, p < 0.001).
+
+```{r}
+# The vif scores are all low without interaction terms 
+vif(m.sales.by.price.genres)
+```
+
+The intercept of regression is adult fiction, so we cannot see the effect of each genre separately. Hence, we plot it on the graph.
+```{r}
+(m.sales.by.price.genres.emm = emmeans(m.sales.by.price.genres, ~genre))
+
+# Plot the graph to solely observe the effect of genres on the number of sales
+ggplot(summary(m.sales.by.price.genres.emm), aes(x=genre, y=emmean, ymin=lower.CL, ymax=upper.CL, color=genre)) + geom_point() + geom_linerange() + labs(x="Genre", y="Number of Daily Sales", col="Genre", subtitle="Error bars are 95% CIs")
+```
+
+If we only observe the effect of genres on the daily sales, we can only get a simple conclusion that YA fiction has the highest book sales, followed by adult fiction and non fiction.
+
+```{r}
+# This graph can clearly show the effect of sale price on daily sales by different genres
+ggplot(sales, aes(y=daily.sales, x=sale.price, color=genre)) + geom_point(alpha = 0.5) + geom_smooth(method = lm) + labs(x="Sale price", y="Number of Daily Sales", col="Genre")
+```
+
+When we also include the effect of sale price, we can get more results that non fiction has the highest sale price with the lowest daily sales, while YA fiction has a lower sale price and higher daily sales. However, even if adult fiction has the similar sale price pattern with YA fiction, it has lower daily sales than that.
+
+### The effect of sale price and different genres with interaction
+```{r}
+m.sales.by.price.genres.intr = lm(daily.sales~sale.price * genre, data=sales)
+summary(m.sales.by.price.genres.intr)
+cbind(coef(m.sales.by.price.genres.intr), confint(m.sales.by.price.genres.intr))
+```
+The result shows that there is a significant negative effect of sale price (b = -0.71, CI[-1.20, -0.22], t(5993) = -2.86, p = 0.0043), non fiction (b = -23.63, CI[-31.83, -15.43], t(5993) = -5.65, p < 0.001) and interaction between sale price and YA fiction (b = -2.84, CI[-3.52, -2.15], t(5993) = -8.12, p < 0.001) on daily sales whereas a significant positive effect of YA fiction (b = 53.09, CI[47.47, 58.71], t(5993) = 18.53, p < 0.001). However, there is no significant interaction between sale price and non fiction (b = 0.6383, CI[-0.04, 1.32], t(5993) = 1.84, p = 0.066).
+
+```{r}
+# The vif scores of genre and the interaction between sale price and genre are higher than 5, meaning that there is a multicollinearity problem, so we shouldn't consider the interaction effect
+vif(m.sales.by.price.genres.intr)
+
+anova(m.sales.by.price.genres, m.sales.by.price.genres.intr)
+```
+Although the anova analysis shows that the model with interaction have a significant improvement (F(5995, 5993) = 57.13, p < 0.001), we wouldn't adopt this model due to its high vif scores.
+
+# Conclusion
+This section presents the results of the analyses that examine the effect on the number of book sales. The analysis was conducted using the data provided for 6000 different kinds of e-book sales. The dataset contains no missing value while a record with a negative number of sales is removed, and hence 5999 records are left.
+
+The regression result shows that a unit of average review scores can significantly decrease 4.30 units (CI[-5.31, -3.29], t(5996) = -8.36, p < 0.001) on the number of   sales, while a unit of total reviews can significantly increase 0.53 units (CI[0.52, 0.55], t(5996) = 68.96, p < 0.001) on that. Overall, books have fewer sales depending on their average review scores whereas more sales depending on the total number of reviews.
+
+When we only consider the effect of sale price on the number of sales, the regression result shows that an average of £1 increase on sale price significantly decrease 3.98 units (CI[-4.15, -3.81], t(5997) = -45.77, p < 0.001) on the number of sales. Simply put, sale price has a negative effect on the number of sales.
+
+When we also include the effect of genres, an average of £1 increase on sale price significantly decrease 1.43 (CI[-1.71, -1.15], t(5995) = -10.03, p < 0.001) units on the number of sales when holding the genre constant. In addition, compared to adult fiction, the number of  sales in non fiction is significantly lower by 9.01 units (CI[-11.40, -6.62], t(5995) = -7.39, p < 0.001), whereas YA fiction is significantly higher by 30.54 units (CI = [29.17, 31.90], t(5995) = 43.76, p < 0.001). In simple terms, after considering the effect of genres, sale price still has a negative effect on the number of sales. For genres, when setting the base line of adult fiction, the effect of non fiction is lower while that of YA fiction is much higher.
